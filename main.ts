@@ -72,7 +72,6 @@ const pendingBuy = new Map<string, bigint>(); // mint -> lamports of the buy in 
 const pendingSell = new Set<string>(); // mints with a sell in flight
 // Small working sets, so per-batch scans stay cheap even with thousands of mints seen.
 const accSet = new Set<string>(); // mints with accumulation budget left
-const opened = new Set<string>(); // mints with at least one buy fill
 
 function setAcc(mint: string, info: MintInfo, remaining: bigint): void {
   info.accRemaining = remaining;
@@ -154,7 +153,6 @@ function onBatch(state: BotState, batch: Batch): OrderInput[] {
         const info = mints.get(f.mint);
         if (info !== undefined && info.firstFillSlot < 0) {
           info.firstFillSlot = f.slot;
-          opened.add(f.mint);
           // The peak starts at the entry price of the first fill.
           info.peakVq = BigInt(f.quote_lamports);
           info.peakVt = BigInt(f.token_amount);
@@ -163,20 +161,11 @@ function onBatch(state: BotState, batch: Batch): OrderInput[] {
       }
     } else {
       pendingSell.delete(f.mint);
+      // A filled sell closes the position: applyBatch already folded this
+      // batch's fills into state.positions before onBatch ran, so a filled
+      // sell with no position left means this mint is done — no separate
+      // per-batch scan over held mints is needed (and none is kept).
       if (f.status === 'filled' && !state.positions.has(f.mint)) done.add(f.mint);
-    }
-  }
-  // Any mint we once held that is no longer held and has nothing in flight is done.
-  for (const mint of [...opened]) {
-    const info = mints.get(mint)!;
-    if (
-      info.firstFillSlot >= 0 &&
-      !state.positions.has(mint) &&
-      !pendingBuy.has(mint) &&
-      !pendingSell.has(mint)
-    ) {
-      done.add(mint);
-      setAcc(mint, info, 0n);
     }
   }
 
